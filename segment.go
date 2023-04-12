@@ -26,6 +26,63 @@ import (
 	agentv3 "skywalking.apache.org/repo/goapi/collect/language/agent/v3"
 )
 
+// add by yjp 2023-04-06
+// 通过传入traceId 构造链路
+//
+// traceId 外部传入
+func newSegmentSpanByTraceId(defaultSpan *defaultSpan, parentSpan segmentSpan, traceId string) (s segmentSpan, err error) {
+	ssi := &segmentSpanImpl{
+		defaultSpan: *defaultSpan,
+	}
+
+	err = ssi.createSegmentContextByTraceId(parentSpan, traceId)
+	if err != nil {
+		return nil, err
+	}
+	if parentSpan == nil || !parentSpan.segmentRegister() {
+		rs := newSegmentRoot(ssi)
+		err = rs.createRootSegmentContext(parentSpan)
+		if err != nil {
+			return nil, err
+		}
+		s = rs
+	} else {
+		s = ssi
+	}
+	return
+}
+
+func (s *segmentSpanImpl) createSegmentContextByTraceId(parent segmentSpan, traceId string) (err error) {
+	if parent == nil {
+		s.SegmentContext = SegmentContext{}
+		if len(s.defaultSpan.Refs) > 0 {
+			s.TraceID = s.defaultSpan.Refs[0].TraceID
+			s.CorrelationContext = s.defaultSpan.Refs[0].CorrelationContext
+		} else {
+			// s.TraceID, err = idgen.GenerateGlobalID()
+			// if err != nil {
+			// 	return err
+			// }
+
+			s.TraceID = traceId
+			s.CorrelationContext = make(map[string]string)
+		}
+	} else {
+		s.SegmentContext = parent.context()
+		s.ParentSegmentID = s.SegmentID
+		s.ParentSpanID = s.SpanID
+		s.SpanID = atomic.AddInt32(s.Context().spanIDGenerator, 1)
+		s.CorrelationContext = parent.context().CorrelationContext
+	}
+	if s.SegmentContext.FirstSpan == nil {
+		s.SegmentContext.FirstSpan = s
+	}
+	if s.CorrelationContext == nil {
+		s.CorrelationContext = make(map[string]string)
+	}
+	return
+}
+
 func newSegmentSpan(defaultSpan *defaultSpan, parentSpan segmentSpan) (s segmentSpan, err error) {
 	ssi := &segmentSpanImpl{
 		defaultSpan: *defaultSpan,

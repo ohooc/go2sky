@@ -90,6 +90,63 @@ func NewTracer(service string, opts ...TracerOption) (tracer *Tracer, err error)
 	return t, nil
 }
 
+// CreateEntrySpanByTraceId creates and starts an entry span by traceId for incoming request
+// add by yjp 2023-04-06 匹配项目
+func (t *Tracer) CreateEntrySpanByTraceId(ctx context.Context, operationName string, traceId string, extractor propagation.Extractor) (s Span, nCtx context.Context, err error) {
+	if ctx == nil || operationName == "" || traceId == "" || extractor == nil {
+		return nil, nil, errParameter
+	}
+	if s, nCtx = t.createNoop(ctx); s != nil {
+		return
+	}
+	var refSc = &propagation.SpanContext{}
+	err = refSc.Decode(extractor)
+	if err != nil {
+		return
+	}
+	if !refSc.Valid {
+		refSc = nil
+	}
+
+	s, nCtx, err = t.CreateLocalSpanByTraceId(ctx, traceId, WithContext(refSc), WithSpanType(SpanTypeEntry), WithOperationName(operationName))
+	return
+}
+
+// CreateLocalSpan creates and starts a span for local usage
+func (t *Tracer) CreateLocalSpanByTraceId(ctx context.Context, traceId string, opts ...SpanOption) (s Span, c context.Context, err error) {
+	if ctx == nil {
+		return nil, nil, errParameter
+	}
+	if s, c = t.createNoop(ctx); s != nil {
+		return
+	}
+	ds := newLocalSpan(t)
+	for _, opt := range opts {
+		opt(ds)
+	}
+	parentSpan, ok := ctx.Value(ctxKeyInstance).(segmentSpan)
+	if !ok {
+		parentSpan = nil
+	}
+	isForceSample := len(ds.Refs) > 0
+	// Try to sample when it is not force sample
+	if parentSpan == nil && !isForceSample {
+		// Force sample
+		sampled := t.sampler.IsSampled(ds.OperationName)
+		if !sampled {
+			// Filter by sample just return noop span
+			s = &NoopSpan{}
+			return s, context.WithValue(ctx, ctxKeyInstance, s), nil
+		}
+	}
+	s, err = newSegmentSpanByTraceId(ds, parentSpan, traceId)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return s, context.WithValue(ctx, ctxKeyInstance, s), nil
+}
+
 // CreateEntrySpan creates and starts an entry span for incoming request
 func (t *Tracer) CreateEntrySpan(ctx context.Context, operationName string, extractor propagation.Extractor) (s Span, nCtx context.Context, err error) {
 	if ctx == nil || operationName == "" || extractor == nil {
@@ -207,7 +264,7 @@ func (t *Tracer) createNoop(ctx context.Context) (s Span, nCtx context.Context) 
 	return
 }
 
-//Reporter is a data transit specification
+// Reporter is a data transit specification
 type Reporter interface {
 	Boot(service string, serviceInstance string, cdsWatchers []AgentConfigChangeWatcher)
 	Send(spans []ReportedSpan)
